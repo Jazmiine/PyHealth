@@ -10,8 +10,10 @@ milliseconds.
 """
 
 import os
+import runpy
 import tempfile
 import unittest
+from pathlib import Path
 
 import torch
 
@@ -223,6 +225,90 @@ class TestSHy(unittest.TestCase):
         model = self.make_model().train()
         model.explain(**self.batch)
         self.assertTrue(model.training)
+
+    def test_masked_history_batches(self):
+        example_path = (
+            Path(__file__).resolve().parents[2]
+            / "examples"
+            / "mimic3_next_visit_diagnosis_prediction_shy.py"
+        )
+        module = runpy.run_path(str(example_path))
+        mask_batches = module["masked_history_batches"]
+
+        batch = {
+            "conditions": torch.tensor(
+                [[[2, 3, 0], [4, 5, 6]], [[7, 8, 0], [9, 0, 0]]]
+            ),
+            "next_conditions": torch.tensor(
+                [[1.0, 0.0], [0.0, 1.0]]
+            ),
+        }
+
+        # Same seed must produce exactly the same corruption.
+        first = next(mask_batches([batch], mask_rate=0.25, seed=0))
+        second = next(mask_batches([batch], mask_rate=0.25, seed=0))
+
+        torch.testing.assert_close(
+            first["conditions"],
+            second["conditions"],
+        )
+
+        # Targets must never be modified.
+        torch.testing.assert_close(
+            first["next_conditions"],
+            batch["next_conditions"],
+        )
+
+        # Existing padding must remain padding.
+        padding = batch["conditions"] == 0
+        self.assertTrue(
+            bool((first["conditions"][padding] == 0).all())
+        )
+
+        # 0% keeps everything; 100% removes every real diagnosis.
+        unmasked = next(mask_batches([batch], mask_rate=0.0, seed=0))
+        fully_masked = next(mask_batches([batch], mask_rate=1.0, seed=0))
+
+        torch.testing.assert_close(
+            unmasked["conditions"],
+            batch["conditions"],
+        )
+        self.assertEqual(
+            int((fully_masked["conditions"] > 0).sum()),
+            0,
+        )
+
+    def test_explanation_metrics(self):
+        model = self.make_model(stochastic_eval=False)
+
+        explanations = model.explain(**self.batch)
+        metrics = model.explanation_metrics(**self.batch)
+
+        complexities = []
+        distinctness = []
+
+        for explanation in explanations:
+            pairs = [
+                (visit, code)
+                for phenotype in explanation["phenotypes"]
+                for visit, code, _ in phenotype
+            ]
+            complexities.append(float(len(pairs)))
+            distinctness.append(
+                len(set(pairs)) / len(pairs) if pairs else 0.0
+            )
+
+        expected_complexity = sum(complexities) / len(complexities)
+        expected_distinctness = sum(distinctness) / len(distinctness)
+
+        self.assertAlmostEqual(
+            metrics["complexity"], expected_complexity
+        )
+        self.assertAlmostEqual(
+            metrics["distinctness"], expected_distinctness
+        )
+        self.assertGreaterEqual(metrics["distinctness"], 0.0)
+        self.assertLessEqual(metrics["distinctness"], 1.0)
 
     def test_loss_weights_zero_gives_prediction_loss(self):
         model = self.make_model(loss_weights=(0.0, 0.0, 0.0))

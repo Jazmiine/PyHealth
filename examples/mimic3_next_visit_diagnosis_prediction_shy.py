@@ -27,13 +27,17 @@ Experimental setup
   and SHy are still improving, so shorter budgets understate both.
 * Metrics: Recall@k and nDCG@k (k = 10, 20), as in the paper.
 
-Ablations and extensions (none of them is in the paper)
+Ablations, reproduction checks and extensions(none of them is in the paper)
 -------------------------------------------------------
 ``--experiments`` selects any of:
 
 * ``baseline``  RETAIN (already in PyHealth) vs SHy with the paper's settings.
 * ``recovery``  false-negative recovery: ``add_ratio`` in {0, 0.1, 0.2, 0.4},
   plus a control that adds the same number of *random* links at 0.2.
+* ``robustness`` incomplete-EHR evaluation: independently hides 25% or 75%
+  of historical diagnoses at test time without retraining, then compare
+  Recall@10/20 and nDCG@10/20 across ``add_ratio`` in {0, 0.1, 0.2, 0.4}.
+  SHy explanation Complexity and Distinctness were reported.
 * ``hierarchy`` hierarchical ICD-9 embeddings vs a flat embedding table.
 * ``phenotypes`` number of phenotypes K in {3, 5, 8} (the paper only
   compares K = 1 and 5). Not run on MIMIC-III.
@@ -83,8 +87,124 @@ from pyhealth.trainer import Trainer
 SYNTHETIC_ROOT = "https://storage.googleapis.com/pyhealth/Synthetic_MIMIC-III"
 METRICS = ["recall@10", "recall@20", "ndcg@10", "ndcg@20"]
 
+
+def masked_history_batches(dataloader, mask_rate: float, seed: int):
+    """Yields batches with diagnosis-history entries randomly hidden.
+
+    Each non-padding diagnosis in ``conditions`` is independently removed
+    with probability ``mask_rate``. Padding entries remain unchanged.
+
+    Args:
+        dataloader: PyHealth dataloader yielding model-ready batches.
+        mask_rate: Fraction of historical diagnoses to hide, in [0, 1].
+        seed: Random seed so the same corruption can be reproduced.
+
+    Yields:
+        Copies of the original batches with masked ``conditions`` tensors.
+    """
+    if not 0.0 <= mask_rate <= 1.0:
+        raise ValueError(
+            f"mask_rate must be between 0 and 1, got {mask_rate}."
+        )
+
+    generator = torch.Generator()
+    generator.manual_seed(seed)
+
+    for batch in dataloader:
+        masked = dict(batch)
+        conditions = batch["conditions"].clone()
+
+        valid = conditions > 0
+        random_values = torch.rand(
+            conditions.shape,
+            generator=generator,
+        )
+        hide = valid & (random_values < mask_rate)
+
+        conditions[hide] = 0
+        masked["conditions"] = conditions
+
+        yield masked
+
 # Paper settings (README of the authors' code, MIMIC-III column), except that
 # the alpha-loss weight follows their training command (0), see ``omega``.
+def evaluate_masked_history(
+    trainer: Trainer,
+    test,
+    batch_size: int,
+    mask_rate: float,
+    seed: int,
+) -> dict[str, float]:
+    """Evaluates a trained model after hiding historical diagnoses.
+
+    Args:
+        trainer: Trainer containing the trained model.
+        test: Test split.
+        batch_size: Evaluation batch size.
+        mask_rate: Probability of hiding each historical diagnosis.
+        seed: Random seed controlling the corruption.
+
+    Returns:
+        Evaluation metrics on the masked test histories.
+    """
+    loader = get_dataloader(
+        test,
+        batch_size=batch_size,
+        shuffle=False,
+    )
+    masked_loader = masked_history_batches(
+        loader,
+        mask_rate=mask_rate,
+        seed=seed,
+    )
+    return trainer.evaluate(masked_loader)
+
+def evaluate_explanations(
+    model: SHy,
+    test,
+    batch_size: int,
+    seed: int,
+) -> dict[str, float]:
+    """Evaluates SHy explanation complexity and distinctness.
+
+    Args:
+        model: Trained SHy model
+        test: Test split
+        batch_size: Evaluation batch size
+        seed: Random seed for reproducible phenotype sampling
+
+    Returns:
+        Mean explanation complexity and distinctness across patients
+    """
+    loader = get_dataloader(
+        test,
+        batch_size=batch_size,
+        shuffle=False,
+    )
+
+    torch.manual_seed(seed)
+
+    total_complexity = 0.0
+    total_distinctness = 0.0
+    total_patients = 0
+
+    for batch in loader:
+        metrics = model.explanation_metrics(**batch)
+        batch_size_actual = batch["conditions"].shape[0]
+
+        total_complexity += (
+            metrics["complexity"] * batch_size_actual
+        )
+        total_distinctness += (
+            metrics["distinctness"] * batch_size_actual
+        )
+        total_patients += batch_size_actual
+
+    return {
+        "complexity": total_complexity / total_patients,
+        "distinctness": total_distinctness / total_patients,
+    }
+
 SHY_PAPER = {
     "dim_per_level": 32,
     "num_levels": 4,
@@ -154,6 +274,17 @@ def experiment_configs(name: str, shy: dict[str, Any], lr: float) -> list[Config
             )
         )
         return runs
+    if name == "robustness":
+        return [
+            (
+                f"SHy robustness add_ratio={p}",
+                "SHy",
+                variant(add_ratio=p),
+                {},
+                lr,
+            )
+            for p in (0.0, 0.1, 0.2, 0.4)
+        ]
     if name == "hierarchy":
         return [
             ("SHy hierarchical emb.", "SHy", shy, {}, lr),
@@ -264,8 +395,60 @@ def run(
         monitor_criterion="max",
         patience=args.patience,
     )
-    scores = trainer.evaluate(get_dataloader(test, args.batch_size, shuffle=False))
+    torch.manual_seed(args.seed)
+    scores = trainer.evaluate(
+        get_dataloader(test, args.batch_size, shuffle=False)
+    )
+    torch.manual_seed(args.seed)
+    masked_25 = evaluate_masked_history(
+        trainer,
+        test,
+        batch_size=args.batch_size,
+        mask_rate=0.25,
+        seed=args.seed,
+    )
+    torch.manual_seed(args.seed)
+    masked_75 = evaluate_masked_history(
+        trainer,
+        test,
+        batch_size=args.batch_size,
+        mask_rate=0.75,
+        seed=args.seed,
+    )
+    masked_25 = evaluate_masked_history(
+        trainer,
+        test,
+        batch_size=args.batch_size,
+        mask_rate=0.25,
+        seed=args.seed,
+    )
+    masked_75 = evaluate_masked_history(
+        trainer,
+        test,
+        batch_size=args.batch_size,
+        mask_rate=0.75,
+        seed=args.seed,
+    )
+    if model_name == "SHy":
+        explanation_scores = evaluate_explanations(
+            model,
+            test,
+            batch_size=args.batch_size,
+            seed=args.seed,
+        )
+    else:
+        explanation_scores = {
+            "complexity": None,
+            "distinctness": None,
+        }
+
     row = {"configuration": label, **{m: scores[m] for m in METRICS}}
+    row["complexity"] = explanation_scores["complexity"]
+    row["distinctness"] = explanation_scores["distinctness"]
+
+    for metric in METRICS:
+        row[f"masked25_{metric}"] = masked_25[metric]
+        row[f"masked75_{metric}"] = masked_75[metric]
     row["minutes"] = (time.time() - start) / 60
     print(
         f"{label:<28}"
@@ -287,6 +470,7 @@ def main() -> None:
         choices=[
             "baseline",
             "recovery",
+            "robustness",
             "hierarchy",
             "phenotypes",
             "omega",
@@ -316,6 +500,7 @@ def main() -> None:
         names = [
             "baseline",
             "recovery",
+            "robustness",
             "hierarchy",
             "phenotypes",
             "omega",
@@ -346,7 +531,17 @@ def main() -> None:
     path = os.path.join(args.output, "results.csv")
     with open(path, "w", newline="") as f:
         writer = csv.DictWriter(
-            f, fieldnames=["experiment", "configuration", *METRICS, "minutes"]
+            f,
+            fieldnames=[
+                "experiment",
+                "configuration",
+                "complexity",
+                "distinctness",
+                *METRICS,
+                *[f"masked25_{m}" for m in METRICS],
+                *[f"masked75_{m}" for m in METRICS],
+                "minutes",
+            ],
         )
         writer.writeheader()
         writer.writerows(rows)

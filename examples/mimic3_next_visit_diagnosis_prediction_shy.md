@@ -83,10 +83,9 @@ masks, so sampling stays the default.
 
 ## Robustness and explanations
 
-The paper's masking test (Section 4.3, Table 2) and explanation metrics
-(Table 3), on seed-0 checkpoints from the runs above. They were measured
-after training with an evaluation notebook that is not part of this PR, so
-the script does not reproduce this section.
+The paper's masking test (Section 4.3, Table 2) and explanation metrics (Table 3) are summarized below. The original MIMIC-III results were measured from seed-0 checkpoints. The example script now includes a runnable robustness experiment that independently masks 25% and 75% of historical diagnoses at test time, without retraining, and reports Recall@10/20, nDCG@10/20, Complexity, and Distinctness across add_ratio values of 0.0, 0.1, 0.2, and 0.4.
+
+The script does not currently reproduce the paper's Faithfulness metric or the percentage of hidden diagnosis links recovered by the false-negative recovery step.
 
 ### Masking test
 
@@ -150,3 +149,18 @@ faithfulness values are not directly comparable.
   complexity 8.3).
 - With `omega` 0.04 all three metrics move toward the paper's values for the
   full model.
+
+### Runnable synthetic robustness experiment
+
+To verify that the robustness evaluation is reproducible without access to protected MIMIC-III data, the experiment was also executed using PyHealth's public synthetic MIMIC-III data with the standard SHy configuration, 20 training epochs, patience 5, batch size 128 and seed 0.
+
+| add_ratio | Complexity | Distinctness | Recall@20 | 25% masked Recall@20 | 75% masked Recall@20 |
+|---:|---:|---:|---:|---:|---:|
+| 0.0 | 25.67 | 0.435 | 0.195 | 0.554 | 0.169 |
+| 0.1 | 26.33 | 0.426 | 0.128 | 0.195 | 0.169 |
+| 0.2 | 29.67 | 0.481 | 0.462 | 0.221 | 0.503 |
+| 0.4 | 35.00 | 0.430 | 0.128 | 0.246 | 0.103 |
+
+Increasing `add_ratio` generally increased explanation Complexity, from 25.67 retained visit-diagnosis pairs at `add_ratio=0.0` to 35.00 at `add_ratio=0.4`. Distinctness remained in a relatively narrow range of approximately 0.43-0.48.
+
+Prediction performance under masking was not monotonic on the small synthetic evaluation set. In several configurations a masked score exceeded its corresponding unmasked score. Therefore, these synthetic results are used to demonstrate deterministic execution of the masking and explanation-evaluation pipeline rather than to claim improved robustness from heavier masking. The MIMIC-III results above remain the more meaningful comparison with the paper.

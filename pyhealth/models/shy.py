@@ -1006,3 +1006,53 @@ class SHy(BaseModel):
             for b in range(inc.batch_size):
                 out[b]["phenotypes"].append(sorted(per_patient[b]))
         return out
+
+    @torch.no_grad()
+    def explanation_metrics(self, **kwargs) -> dict[str, float]:
+        """Computes complexity and distinctness of SHy explanations.
+
+        Complexity is the average number of diagnosis-visit pairs retained
+        across all temporal phenotypes for a patient.
+
+        Distinctness measures overlap across temporal phenotypes. For each
+        patient, it is the number of unique retained diagnosis-visit pairs
+        divided by the total number of retained pairs. A higher value means
+        less overlap between phenotypes.
+
+        Args:
+            **kwargs: A batch accepted by :meth:`explain`.
+
+        Returns:
+            A dictionary containing mean ``complexity`` and ``distinctness``
+            across the batch.
+        """
+        explanations = self.explain(**kwargs)
+
+        if not explanations:
+            return {"complexity": 0.0, "distinctness": 0.0}
+
+        complexities = []
+        distinctness_scores = []
+
+        for explanation in explanations:
+            phenotypes = explanation["phenotypes"]
+
+            pairs = [
+                (visit, code)
+                for phenotype in phenotypes
+                for visit, code, _ in phenotype
+            ]
+
+            complexities.append(float(len(pairs)))
+
+            if pairs:
+                distinctness_scores.append(len(set(pairs)) / len(pairs))
+            else:
+                distinctness_scores.append(0.0)
+
+        return {
+            "complexity": sum(complexities) / len(complexities),
+            "distinctness": (
+                sum(distinctness_scores) / len(distinctness_scores)
+            ),
+        }
