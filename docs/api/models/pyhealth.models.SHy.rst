@@ -11,6 +11,21 @@ phenotypes, which together with their weights are the explanation
 :class:`~pyhealth.tasks.NextVisitDiagnosisPredictionMIMIC3` and the
 ``recall@k`` / ``ndcg@k`` metrics of :func:`~pyhealth.metrics.multilabel_metrics_fn`.
 
+Explanation metrics
+-------------------
+After training, :meth:`SHy.explain` returns the temporal phenotype explanations and their weights. :meth:`SHy.explanation_metrics` provides summary measures for these explanations:
+
+* ``complexity`` is the average number of retained diagnosis-visit pairs across a patient's temporal phenotypes.
+* ``distinctness`` is the fraction of unique retained diagnosis-visit pairs among all retained pairs. Higher values indicate less overlap between phenotypes.
+
+For example:
+
+.. code-block:: python
+
+    batch = next(iter(test_loader))
+    metrics = model.explanation_metrics(**batch)
+    print(metrics["complexity"], metrics["distinctness"])
+
 .. autoclass:: pyhealth.models.SHy
     :members:
     :undoc-members:

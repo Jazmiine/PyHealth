@@ -27,7 +27,7 @@ Experimental setup
   and SHy are still improving, so shorter budgets understate both.
 * Metrics: Recall@k and nDCG@k (k = 10, 20), as in the paper.
 
-Ablations, reproduction checks and extensions(none of them is in the paper)
+Ablations, reproduction checks and extensions
 -------------------------------------------------------
 ``--experiments`` selects any of:
 

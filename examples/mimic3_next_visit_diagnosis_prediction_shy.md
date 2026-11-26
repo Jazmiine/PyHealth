@@ -81,6 +81,18 @@ Deterministic evaluation masks (`stochastic_eval=False`) keep about 0.1% of
 the (visit, code) pairs and score 0.23 Recall@20 against 0.37 with sampled
 masks, so sampling stays the default.
 
+### Runnable synthetic baseline comparison
+
+The planned SHy-versus-RETAIN baseline was also executed on PyHealth's public synthetic MIMIC-III data using 20 training epochs, patience 5,
+batch size 128, and seed 0.
+
+| Model | Recall@10 | Recall@20 | nDCG@10 | nDCG@20 |
+|---|---:|---:|---:|---:|
+| RETAIN | 0.000 | 0.200 | 0.000 | 0.084 |
+| SHy (paper settings) | 0.051 | 0.462 | 0.065 | 0.178 |
+
+On this small synthetic evaluation set, SHy achieved higher unmasked Recall@20 and nDCG@20 than RETAIN. These scores are included to verify the planned baseline comparison and runnable evaluation pipeline, not as a reproduction of the paper's real MIMIC-III performance.
+
 ## Robustness and explanations
 
 The paper's masking test (Section 4.3, Table 2) and explanation metrics (Table 3) are summarized below. The original MIMIC-III results were measured from seed-0 checkpoints. The example script now includes a runnable robustness experiment that independently masks 25% and 75% of historical diagnoses at test time, without retraining, and reports Recall@10/20, nDCG@10/20, Complexity, and Distinctness across add_ratio values of 0.0, 0.1, 0.2, and 0.4.
